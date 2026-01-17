@@ -1,24 +1,24 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.engine import make_url # <--- Thêm import này
+from sqlalchemy.engine import make_url
 from .config import settings
 
-# 1. Parse URL từ string sang object để dễ xử lý
+# 1. Parse URL từ string sang object cấu trúc
 db_url_obj = make_url(settings.DATABASE_URL)
 
-# 2. Xử lý vụ Render dùng 'postgres://' thay vì 'postgresql://'
-# Bước này cực kỳ quan trọng vì Render thường trả về 'postgres://'
-if db_url_obj.drivername == "postgres":
-    db_url_obj = db_url_obj.set(drivername="postgresql+asyncpg")
-elif db_url_obj.drivername == "postgresql":
+# 2. Xử lý driver: Chuyển 'postgres' hoặc 'postgresql' thành 'postgresql+asyncpg'
+# Render thường trả về 'postgres://', còn code cần 'postgresql+asyncpg://'
+if db_url_obj.drivername in ["postgres", "postgresql"]:
     db_url_obj = db_url_obj.set(drivername="postgresql+asyncpg")
 
-# 3. SỬA LỖI 500: Đảm bảo port là số nguyên (INT)
-# Lỗi của bạn xảy ra vì port đang bị hiểu là string "5432"
-if db_url_obj.port is not None:
+# 3. QUAN TRỌNG NHẤT: Ép kiểu Port về INT
+# Đây là bước sửa lỗi "TypeError: '<' not supported..."
+if db_url_obj.port:
     db_url_obj = db_url_obj.set(port=int(db_url_obj.port))
 
-# 4. Tạo engine từ object URL đã chuẩn hóa
+# 4. Tạo engine
+# Lưu ý: Cần convert object URL về string đe engine sử dụng, hoặc truyền thẳng object (tuỳ phiên bản)
+# Để an toàn nhất, ta dùng db_url_obj trực tiếp vì create_async_engine hỗ trợ nó.
 engine = create_async_engine(db_url_obj, echo=False)
 
 AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
