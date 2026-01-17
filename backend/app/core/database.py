@@ -4,42 +4,36 @@ from sqlalchemy.engine import make_url
 from typing import AsyncGenerator
 from .config import settings
 
-# 1. Parse URL cấu hình từ Settings
+# 1. Parse URL
 url_obj = make_url(settings.DATABASE_URL)
 
-# 2. Xử lý Driver cho Render (Render trả về postgres://, ta cần postgresql+asyncpg://)
-if url_obj.drivername.startswith("postgres"):
+# 2. Driver mapping
+if url_obj.drivername in ["postgres", "postgresql"]:
     url_obj = url_obj.set(drivername="postgresql+asyncpg")
 
-# 3. CHUẨN BỊ THAM SỐ KẾT NỐI (CONNECT ARGS)
-# Đây là nơi sửa lỗi "TypeError: '<' not supported between instances of 'str' and 'int'"
+# 3. Connect Args
 connect_args = {
-    "statement_cache_size": 0, 
     "command_timeout": 60
 }
 
-# Nếu trong URL có Port, ta ép kiểu sang INT và đưa vào connect_args
-# Để đảm bảo asyncpg không bao giờ nhận Port là string
+# Fix lỗi Port String -> Int
 if url_obj.port:
     connect_args["port"] = int(url_obj.port)
 
-# 4. Tạo Async Engine với cấu hình tối ưu (High Performance)
+# Mẹo quan trọng cho Supabase Pooler (kể cả Session hay Transaction mode)
+# Tắt prepared statements để tránh lỗi cache
+connect_args["statement_cache_size"] = 0
+
 engine = create_async_engine(
-    url_obj, # Truyền object URL đã xử lý
+    url_obj,
     echo=settings.DATABASE_ECHO,
-    
-    # Tham số tối ưu từ V4 của bạn
     pool_pre_ping=True,
     pool_size=20,
     max_overflow=30,
     pool_recycle=300,
-    pool_timeout=30,
-    
-    # Tham số connect_args đã được fix port
-    connect_args=connect_args
+    connect_args=connect_args # Đã bao gồm fix port và tắt cache
 )
 
-# Create session factory
 async_session_maker = async_sessionmaker(
     engine,
     class_=AsyncSession,
@@ -55,11 +49,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session_maker() as session:
         try:
             yield session
-            # Chỉ commit nếu không có lỗi xảy ra trong quá trình xử lý request
-            # await session.commit() -> Code cũ của bạn auto commit ở đây
-            # Nhưng tốt nhất là nên để controller quyết định commit.
-            # Tuy nhiên để giống V1 mình sẽ giữ nguyên logic cũ của bạn.
-            await session.commit()
+            # await session.commit() # Để controller tự xử lý commit
         except Exception:
             await session.rollback()
             raise

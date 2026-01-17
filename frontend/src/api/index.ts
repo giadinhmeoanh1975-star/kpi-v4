@@ -1,5 +1,5 @@
-const API = '/api'
-
+// Sửa dòng đầu tiên thành:
+const API = 'https://kpi-v4.onrender.com/api'
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('token')
   const headers: HeadersInit = {
