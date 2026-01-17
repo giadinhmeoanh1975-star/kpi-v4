@@ -1,32 +1,67 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.engine import make_url
+from typing import AsyncGenerator
 from .config import settings
 
-# 1. Parse URL từ string sang object cấu trúc
-db_url_obj = make_url(settings.DATABASE_URL)
+# 1. Parse URL cấu hình từ Settings
+url_obj = make_url(settings.DATABASE_URL)
 
-# 2. Xử lý driver: Chuyển 'postgres' hoặc 'postgresql' thành 'postgresql+asyncpg'
-# Render thường trả về 'postgres://', còn code cần 'postgresql+asyncpg://'
-if db_url_obj.drivername in ["postgres", "postgresql"]:
-    db_url_obj = db_url_obj.set(drivername="postgresql+asyncpg")
+# 2. Xử lý Driver cho Render (Render trả về postgres://, ta cần postgresql+asyncpg://)
+if url_obj.drivername.startswith("postgres"):
+    url_obj = url_obj.set(drivername="postgresql+asyncpg")
 
-# 3. QUAN TRỌNG NHẤT: Ép kiểu Port về INT
-# Đây là bước sửa lỗi "TypeError: '<' not supported..."
-if db_url_obj.port:
-    db_url_obj = db_url_obj.set(port=int(db_url_obj.port))
+# 3. CHUẨN BỊ THAM SỐ KẾT NỐI (CONNECT ARGS)
+# Đây là nơi sửa lỗi "TypeError: '<' not supported between instances of 'str' and 'int'"
+connect_args = {
+    "statement_cache_size": 0, 
+    "command_timeout": 60
+}
 
-# 4. Tạo engine
-# Lưu ý: Cần convert object URL về string đe engine sử dụng, hoặc truyền thẳng object (tuỳ phiên bản)
-# Để an toàn nhất, ta dùng db_url_obj trực tiếp vì create_async_engine hỗ trợ nó.
-engine = create_async_engine(db_url_obj, echo=False)
+# Nếu trong URL có Port, ta ép kiểu sang INT và đưa vào connect_args
+# Để đảm bảo asyncpg không bao giờ nhận Port là string
+if url_obj.port:
+    connect_args["port"] = int(url_obj.port)
 
-AsyncSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-Base = declarative_base()
+# 4. Tạo Async Engine với cấu hình tối ưu (High Performance)
+engine = create_async_engine(
+    url_obj, # Truyền object URL đã xử lý
+    echo=settings.DATABASE_ECHO,
+    
+    # Tham số tối ưu từ V4 của bạn
+    pool_pre_ping=True,
+    pool_size=20,
+    max_overflow=30,
+    pool_recycle=300,
+    pool_timeout=30,
+    
+    # Tham số connect_args đã được fix port
+    connect_args=connect_args
+)
 
-async def get_db():
-    async with AsyncSessionLocal() as session:
+# Create session factory
+async_session_maker = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
+
+class Base(DeclarativeBase):
+    pass
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with async_session_maker() as session:
         try:
             yield session
+            # Chỉ commit nếu không có lỗi xảy ra trong quá trình xử lý request
+            # await session.commit() -> Code cũ của bạn auto commit ở đây
+            # Nhưng tốt nhất là nên để controller quyết định commit.
+            # Tuy nhiên để giống V1 mình sẽ giữ nguyên logic cũ của bạn.
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
         finally:
             await session.close()
